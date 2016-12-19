@@ -5,25 +5,35 @@
 #include <string.h>
 #include <getopt.h>
 
-// TODO: - Allow functions in .bashrc to be used as well.
-//       - Add content of directories recursively.
-//       - Make sure only one command is associated with a given
-//         extension.
+// TODO: - Add content of directories recursively.
+// 
 //       - Differentiate DIRECTORIES and files. (DIR, FILE)?
 //         What to do with directories then?
+//         Idea: Add a label system (%DIR% and %FILE% would be
+//         reserved, %IMG%, %VIDEO%, ... could be associted with
+//         extensions by a user).
+//         
 //       - Allow more powerful syntax.
+//
+//       - Add options:
+//         --recursive: (See first point.)
+//         --as LABEL: (See label sytem) open ALL files given with the command associated to the LABEL.
+//         --only LABEL [LABEL ...]: Only open files associated to the LABEL(s).
+//       
+//       - Make sure only one command is associated with a given
+//         extension.
 
 #define ME "xopen"
 
 #define MAJOR_VERSION 0
-#define MINOR_VERSION 2
+#define MINOR_VERSION 3
 
 #define VERSION TO_STRING(JOIN3(MAJOR_VERSION, ., MINOR_VERSION))
 
 enum OptionFlag
 {
 	OptionFlag_NONE		= 0,
-	OptionFlag_WHICH	= 1 << 1,
+	OptionFlag_WHICH	= 1 << 0,
 };
 
 struct Instruction
@@ -47,6 +57,8 @@ static char usage[] =
 	"If a line does not have any extension, it's the default command\n"
 	"(used when no other line matches).\n"
 	"In that case, '-' can be omitted.\n\n"
+	"A command can be any executable in your PATH or any function in\n"
+	"~/.bashrc.\n\n"
 	"Example:\n"
 	"evince - pdf\n"
 	"mpv - mp4 mkv\n"
@@ -94,18 +106,18 @@ static inline int copyOutput(int pipe_fd[2], char *buffer, int bufferSize)
 // NOTE: This part can be reused.
 /* Exec command with args (commandPath is absolute, args[0] must be
    the command name).
+   Store child's status code in statusCode if not in background.
    Store child's stdout in stdoutBuffer (if any).
    Store parent or child's stderr in stderrBuffer (if any).
-   Store child's status code in statusCode if not in background.
  
    Return < 0 if error on parent's part.
           > 0 if error on child's part.
           = 0 otherwhise.
 */
-static int childExec(char *commandPath, char *args[],
+static int childExec(char *commandPath, char *args[], int *statusCode = NULL,
 					 char *stdoutBuffer = NULL, int stdoutBufferSize = 0,
 					 char *stderrBuffer = NULL, int stderrBufferSize = 0,
-					 int *statusCode = NULL, b32 inBackground = false)
+					 b32 inBackground = false)
 {
 	// NOTE: Using macros for this is totally unnecessary.
 	//       But it's fun!
@@ -328,8 +340,8 @@ int main(int argc, char* argv[])
 		char *command = line;
 		int commandLength = 0;
 
-		// NOTE: Search extension in config file.
-		//       If found, add file to associated command.
+		// Search extension in config file.
+		// If found, add file to associated command.
 		if (*extension)
 		{
 			// NOTE: Extensions are separated by spaces or are at the
@@ -346,10 +358,9 @@ int main(int argc, char* argv[])
 					NULL
 				};
 			
-			int status = childExec("/bin/grep", grepArgs,
+			int status = childExec("/bin/grep", grepArgs, &statusCode,
 								   line, ARRAY_SIZE(line),
-								   errorBuffer, ARRAY_SIZE(errorBuffer),
-								   &statusCode);
+								   errorBuffer, ARRAY_SIZE(errorBuffer));
 
 			if (status == 0)
 			{
@@ -397,10 +408,9 @@ int main(int argc, char* argv[])
 					NULL
 				};
 			
-			int status = childExec("/bin/grep", grepArgs,
+			int status = childExec("/bin/grep", grepArgs, &statusCode,
 								   line, ARRAY_SIZE(line),
-								   errorBuffer, ARRAY_SIZE(errorBuffer),
-								   &statusCode);
+								   errorBuffer, ARRAY_SIZE(errorBuffer));
 				
 			if (status == 0)
 			{
@@ -468,57 +478,79 @@ int main(int argc, char* argv[])
 				instruction.command,
 				NULL
 			};
-			
+		
 		char commandPath[255] = {};
 		int statusCode = 0;
 
-		// FIXME: Find a way to use shell functions (at least
-		//        those defined in ~/.bashrc)...
-		int status = childExec("/usr/bin/which", whichArgs,
-							   commandPath, ARRAY_SIZE(commandPath),
-							   NULL, 0,
-							   &statusCode);
+		// TODO: Separate actual command name from its arguments and
+		//       its path (if it's a shell function).
+		int status = childExec("/usr/bin/which", whichArgs, &statusCode,
+							   commandPath, ARRAY_SIZE(commandPath));
 
 		if (status != 0)
 		{		
 			continue;
 		}
 
+		// NOTE: If which did not find the command, we assume it's a
+		//       shell function defined in ~/.bashrc.
+		char *path = (statusCode == 0) ? commandPath : (char *) "~/.bashrc";
+		
 		if (optionFlags & OptionFlag_WHICH)
 		{
-			printf("%s ", instruction.command);
-			
-			if (statusCode != 0)
-			{		
-				printf("(Unknown)");
-			}
-			else
-			{
-				printf("(%s)", commandPath);
-			}
-			
+			printf("%s (%s)", instruction.command, path);
 			PRINT_N_ARRAY("\n\t%s", "", instruction.arguments, instruction.argumentCount);
 			printf("\n\n");
 		}
-		else
+		// It's a script.
+		else if (statusCode == 0)
 		{
-			if (statusCode != 0)
-			{
-				char buffer[255];
-				sprintf(buffer, "%s: unknown command %s.\n", ME, instruction.command);
-				fprintf(stderr, buffer);
-
-				continue;
-			}
-
 			// + 2: command name + NULL. 
 			char *commandArgs[ARRAY_SIZE(((Instruction *) 0)->arguments) + 2] = {};
 
 			commandArgs[0] = instruction.command;
 			memcpy(commandArgs + 1, instruction.arguments, instruction.argumentCount * sizeof(char *));
 
-			status = childExec(commandPath, commandArgs,
-			                   NULL, 0, NULL, 0, NULL, true);
+			childExec(path, commandArgs,
+					  NULL, NULL, 0, NULL, 0, true);
+		}
+		// It's a function.
+		else
+		{
+			// TODO: Actually compute max length!
+			// NOTE: To be correctly interpreted by bash, it must be:
+			//       ". SOURCE_FILE && CMD ARGS" as one string.
+			char bashCommand[4096] = {". "};
+			char *current = bashCommand + 2;
+
+			// Why strcpy doesn't return where it stopped writing
+			// instead of returning the original buffer is beyond
+			// me...
+			current = strcpy(current, path) + strlen(path);
+			*current++ = ' '; *current++ = '&'; *current++ = '&'; *current++ = ' ';
+			
+			current = strcpy(current, instruction.command) + instruction.commandLength;
+			*current++ = ' ';
+			
+			for (int index = 0; index < instruction.argumentCount; ++index)
+			{
+				char *argument = instruction.arguments[index];
+				current = strcpy(current, argument) + strlen(argument);
+				*current++ = ' ';
+			}
+
+			*(--current) = '\0';
+			
+			char *bashArgs[ARRAY_SIZE(((Instruction *) 0)->arguments) + 3] =
+				{
+					"bash",
+					"-c",
+					bashCommand,
+					NULL,
+				};
+			
+			childExec("/bin/bash", bashArgs,
+					  NULL, NULL, 0, NULL, 0, false);
 		}
 	}
 
