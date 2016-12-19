@@ -33,6 +33,6 @@ If a line only contains `CMD`, it's the default instruction
 
 ### Note ###
 
-`EXPRESSION` is dot-less (i.e: `pdf` not `.pdf`.
+`EXPRESSION` is dot-less (i.e: `pdf` not `.pdf`).
 
 `CMD` must be recognised by `which` (shell functions won't work).
