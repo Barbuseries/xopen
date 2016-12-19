@@ -35,4 +35,4 @@ If a line only contains `CMD`, it's the default instruction
 
 `EXPRESSION` is dot-less (i.e: `pdf` not `.pdf`).
 
-`CMD` must be recognised by `which` (shell functions won't work).
+`CMD` must be recognised by `which` or be a function in your `~/.bashrc`.
