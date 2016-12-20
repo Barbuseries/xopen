@@ -42,8 +42,12 @@ struct Instruction
 	char command[255];
 	char *arguments[255];
 	
+	// NOTE: Let's be honest, more than this is ludicrous.
+	char extensions[128][10];
+	
 	int commandLength;
 	int argumentCount;
+	int extensionCount;
 };
 
 static char usage[] =
@@ -338,7 +342,7 @@ int main(int argc, char* argv[])
 	}
 
 	// TODO: Properly get the number of entries.
-	char allEntries[255][255];
+	char allEntries[1024][255];
 	int entryCount = 0;
 
 	entryCount = argc - optind;
@@ -352,6 +356,7 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
+	// Copy entries given from argv.
 	for (int i = 0; i < entryCount; ++i)
 	{
 		strcpy(allEntries[i], argv[optind + i]);
@@ -364,6 +369,7 @@ int main(int argc, char* argv[])
 		}
 	}
 
+	// Add sub-directories recursively.
 	if (optionFlags & OptionFlag_RECURSIVE)
 	{
 		int i = 0;
@@ -417,12 +423,43 @@ int main(int argc, char* argv[])
 		}
 	}
 
+	// Find corresponding command for each entry.
 	for (int i = 0; i < entryCount; ++i)
 	{
 		char *entry = allEntries[i];
 		char *extension = entry;
-			
+		
+		// TODO: Differentiate if it's a directory or a file (use '/'
+		//       as directory extension)
+		//       Use _last_ dot as start of extension? (what to do
+		//       with .tar.gz??)
+		// P.S: There is no directory if OptionFlag_RECURSIVE is set.
 		while (*extension && (*extension++) != '.');
+
+		b32 found = false;
+
+		// First search if a command was already found for this
+		// extension.
+		// (To reduce the number of exec calls, and speed things up.)
+		for (int index = 0; index < instructionCount; ++index)
+		{
+			Instruction *instruction = allInstructions + index;
+
+			for (int extensionIndex = 0; extensionIndex < instruction->extensionCount; ++extensionIndex)
+			{
+				if (strcmp(extension, instruction->extensions[extensionIndex]) == 0)
+				{
+					instruction->arguments[instruction->argumentCount++] = entry;
+					found = true;
+					break;
+				}
+			}
+		}
+
+		if (found)
+		{
+			continue;
+		}
 
 		// FIXME: Do not assume ouput is less than 255 chars.
 		char line[255] = {};
@@ -536,19 +573,24 @@ int main(int argc, char* argv[])
 		else
 		{
 			b32 found = false;
-					
-			FOR_EACH(Instruction, instruction, allInstructions)
+
+			// Add to existing command.
+			for (int index = 0; index < instructionCount; ++index)
 			{
+				Instruction *instruction = allInstructions + index;
+				
 				if (instruction->command &&
 					(instruction->commandLength == commandLength) &&
 					(strncmp(instruction->command, command, commandLength) == 0))
 				{
 					instruction->arguments[instruction->argumentCount++] = entry;
+					strcpy(instruction->extensions[instruction->extensionCount++], extension);
 					found = true;
 					break;
 				}
 			}
 
+			// Add to new command.
 			if (!found)
 			{
 				Instruction *instruction = allInstructions + instructionCount++;
@@ -556,10 +598,12 @@ int main(int argc, char* argv[])
 				instruction->commandLength = commandLength;
 				strncpy(instruction->command, command, commandLength);
 				instruction->arguments[instruction->argumentCount++] = entry;
+				strcpy(instruction->extensions[instruction->extensionCount++], extension);
 			}
 		}
 	}
 
+	// Execute each command with associated entries.
 	for (int i = 0; i < instructionCount; ++i)
 	{
 		Instruction instruction = allInstructions[i];
