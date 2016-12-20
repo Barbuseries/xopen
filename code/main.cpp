@@ -1,4 +1,6 @@
 #include "ef_utils.h"
+#include "config_file_parser.h"
+
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -7,7 +9,7 @@
 #include <getopt.h>
 #include <dirent.h>
 
-// TODO: - Add a label system %IMG%, %VIDEO%, ... associted with
+// TODO: - Add a label system @IMG, @VIDEO, ... associated with
 //         extensions by a user).
 //         
 //       - Allow more powerful syntax.
@@ -22,7 +24,7 @@
 #define ME "xopen"
 
 #define MAJOR_VERSION 0
-#define MINOR_VERSION 3
+#define MINOR_VERSION 4
 
 #define VERSION TO_STRING(JOIN3(MAJOR_VERSION, ., MINOR_VERSION))
 
@@ -33,17 +35,6 @@ enum OptionFlag
 	OptionFlag_RECURSIVE	= 1 << 1,
 };
 
-struct Instruction
-{
-	char command[255];
-	char *arguments[255];
-	
-	char extensions[128][64];
-	
-	int commandLength;
-	int argumentCount;
-	int extensionCount;
-};
 
 static char usage[] =
 {
@@ -236,7 +227,7 @@ int main(int argc, char* argv[])
 		char buffer[255];
 		sprintf(buffer, "%s: could not create config file: no home directory found.\n", ME);
 		fprintf(stderr, buffer);
-
+ 
 		return -1;
 	}
 
@@ -252,10 +243,7 @@ int main(int argc, char* argv[])
 	}
 	
 	fclose(handle);
-
-	Instruction allInstructions[255] = {};
-	int instructionCount = 0;
-
+	
 	int helpFlag = 0,
 		versionFlag = 0;
 	
@@ -420,9 +408,27 @@ int main(int argc, char* argv[])
 		}
 	}
 
-	// Find corresponding command for each entry.
+	Instruction allInstructions[255];
+	int instructionCount = makeInstructionsFromConfig(configFile, allInstructions,
+													  (i32) ARRAY_SIZE(allInstructions));
+
+	Instruction *defaultInstruction = allInstructions;
+
+	// Default instruction is the only one without any associated
+	// extension (just after reading the config file).
+	for (int index = 0; index < instructionCount; ++index)
+	{
+		if (!(defaultInstruction->extensionCount))
+		{
+			break;
+		}
+
+		++defaultInstruction;
+	}
+	
 	for (int i = 0; i < entryCount; ++i)
 	{
+		// Extract extenstion.
 		char *entry = allEntries[i];
 		char *entryOffset = entry + strlen(entry) - 1;
 		
@@ -456,31 +462,34 @@ int main(int argc, char* argv[])
 		}
 		else
 		{
-			if (!(strlen(entryOffset + 1) < ARRAY_SIZE(extension)))
-			{
-				fprintf(stderr, "%s: %s\n", entry, entryOffset);
-			}
-			
 			ASSERT(strlen(entryOffset + 1) < ARRAY_SIZE(extension));
 			
 			strcpy(extension, entryOffset + 1);
 		}
-		
+
+	// Find corresponding command (based on entry's extension).
 	extension_check:
 
-		b32 found = false;
+		if ((defaultInstruction - allInstructions) >= instructionCount)
+		{
+			defaultInstruction = NULL;
+		}
 
-		// First search if a command was already found for this
-		// extension.
-		// (To reduce the number of exec calls, and speed things up.)
+		b32 found = false;
+		size_t extensionLength = strlen(extension);
+
+		// Search if a command is associated with this extension.
 		for (int index = 0; index < instructionCount; ++index)
 		{
 			Instruction *instruction = allInstructions + index;
 
 			for (int extensionIndex = 0; extensionIndex < instruction->extensionCount; ++extensionIndex)
 			{
-				if (strcmp(extension, instruction->extensions[extensionIndex]) == 0)
+				if ((instruction->extensionsLength[extensionIndex] == extensionLength) &&
+					(strncmp(extension, instruction->extensions[extensionIndex], extensionLength) == 0))
 				{
+					ASSERT(instruction->argumentCount < (i32) ARRAY_SIZE(instruction->arguments));
+					
 					instruction->arguments[instruction->argumentCount++] = entry;
 					found = true;
 					break;
@@ -488,149 +497,25 @@ int main(int argc, char* argv[])
 			}
 		}
 
-		if (found)
+		// Otherwhise, associate it with the default command (if there
+		// is any).
+		if (!found)
 		{
-			continue;
-		}
-
-		// FIXME: Do not assume ouput is less than 255 chars.
-		char line[255] = {};
-		char errorBuffer[255] = {};
-		int statusCode = 0;
-		
-		char *command = line;
-		int commandLength = 0;
-
-		// Search extension in config file.
-		// If found, add entry to associated command.
-		if (*extension)
-		{
-			// NOTE: Extensions are separated by spaces or are at the
-			//       end of a line.
-			char regexp[255];
-			sprintf(regexp, " %s( |$)", extension);
-			
-			char *grepArgs[] =
-				{
-					"grep",
-					"--extended-regexp",
-					regexp,
-					configFile,
-					NULL
-				};
-			
-			int status = childExec("/bin/grep", grepArgs, &statusCode,
-								   line, ARRAY_SIZE(line),
-								   errorBuffer, ARRAY_SIZE(errorBuffer));
-
-			if (status == 0)
+			if (defaultInstruction)
 			{
-				if (statusCode == 0)
-				{
-					// NOTE: Syntax is CMD - EXTENSION [EXTENSION ...].
-					char *commandEnd = strstr(command, " - ");
-
-					if (commandEnd == NULL)
-					{
-						char buffer[255];
-						sprintf(buffer, "%s: invalid configuration for extension '%s'.\n",
-								ME, extension);
-						fprintf(stderr, buffer);
-
-						return -3;
-					}
-
-					// Remove trailing whitespaces.
-					while (*commandEnd == ' ')
-					{
-						--commandEnd;
-					}
-							
-					commandLength = commandEnd - line + 1;
-				}
-			}
-			else if (status > 0)
-			{
-				fprintf(stderr, errorBuffer);
-			}
-		}
-
-		// NOTE: Default command if no extension or no associated
-		//       command found.
-		if (!(*extension) ||
-			!(*command))
-		{
-			char *grepArgs[] =
-				{
-					"grep",
-					"--invert-match",
-					" - ",
-					configFile,
-					NULL
-				};
-			
-			int status = childExec("/bin/grep", grepArgs, &statusCode,
-								   line, ARRAY_SIZE(line),
-								   errorBuffer, ARRAY_SIZE(errorBuffer));
+				ASSERT(defaultInstruction->argumentCount < (i32) ARRAY_SIZE(defaultInstruction->arguments));
 				
-			if (status == 0)
-			{
-				if (statusCode == 0)
-				{
-					char *commandEnd = line + strlen(line) - 1;
-						
-					// Remove trailing whitespaces.
-					while (*commandEnd == ' ')
-					{
-						--commandEnd;
-					}
-						
-					commandLength = commandEnd - line + 1;
-				}
+				defaultInstruction->arguments[defaultInstruction->argumentCount++] = entry;
+				strcpy(defaultInstruction->extensions[defaultInstruction->extensionCount], extension);
+				defaultInstruction->extensionsLength[defaultInstruction->extensionCount++] = extensionLength;
 			}
-			else if (status > 0)
+			else
 			{
-				fprintf(stderr, errorBuffer);
-			}
-		}
-
-		// TODO?: Keep separate error message or group by extension?
-		if (!(*command))
-		{
-			char buffer[255];
-			sprintf(buffer, "%s: %s: no command specified for extension '%s'.\n",
-					ME, entry, extension);
-			fprintf(stderr, buffer);
-		}
-		else
-		{
-			b32 found = false;
-
-			// Add to existing command.
-			for (int index = 0; index < instructionCount; ++index)
-			{
-				Instruction *instruction = allInstructions + index;
-				
-				if (instruction->command &&
-					(instruction->commandLength == commandLength) &&
-					(strncmp(instruction->command, command, commandLength) == 0))
-				{
-					instruction->arguments[instruction->argumentCount++] = entry;
-					strcpy(instruction->extensions[instruction->extensionCount++], extension);
-					found = true;
-					break;
-				}
-			}
-
-			// Add to new command.
-			if (!found)
-			{
-				Instruction *instruction = allInstructions + instructionCount++;
-						
-				instruction->commandLength = commandLength;
-				strncpy(instruction->command, command, commandLength);
-				instruction->arguments[instruction->argumentCount++] = entry;
-				strcpy(instruction->extensions[instruction->extensionCount++], extension);
+				// TODO?: Keep separate error message or group by extension?
+				char buffer[255];
+				sprintf(buffer, "%s: %s: no command specified for extension '%s'.\n",
+						ME, entry, extension);
+				fprintf(stderr, buffer);
 			}
 		}
 	}
@@ -640,6 +525,13 @@ int main(int argc, char* argv[])
 	{
 		Instruction instruction = allInstructions[i];
 
+		if (!instruction.argumentCount)
+		{
+			continue;
+		}
+
+		// TODO: Move this part to config_file_parser (because
+		//       shell functions' path will be infered there).
 		char *whichArgs[] =
 			{
 				"which",
@@ -647,13 +539,9 @@ int main(int argc, char* argv[])
 				NULL
 			};
 		
-		char commandPath[255] = {};
 		int statusCode = 0;
-
-		// TODO: Separate actual command name from its arguments and
-		//       its path (if it's a shell function).
 		int status = childExec("/usr/bin/which", whichArgs, &statusCode,
-							   commandPath, ARRAY_SIZE(commandPath));
+							   instruction.commandPath, ARRAY_SIZE(instruction.commandPath));
 
 		if (status != 0)
 		{		
@@ -662,7 +550,7 @@ int main(int argc, char* argv[])
 
 		// NOTE: If which did not find the command, we assume it's a
 		//       shell function defined in ~/.bashrc.
-		char *path = (statusCode == 0) ? commandPath : (char *) "~/.bashrc";
+		char *path = (statusCode == 0) ? instruction.commandPath : (char *) "~/.bashrc";
 		
 		if (optionFlags & OptionFlag_WHICH)
 		{
@@ -724,6 +612,6 @@ int main(int argc, char* argv[])
 					  NULL, NULL, 0, NULL, 0, false);
 		}
 	}
-
+	
 	return 0;
 }

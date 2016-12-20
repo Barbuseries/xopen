@@ -56,23 +56,16 @@ typedef int			b32;
 #define FOR_I(arr)	          FOR_INDEX(i, arr)
 #define FOR_J(arr)	          FOR_INDEX(j, arr)
 
-// TODO: Allow pointers to be used aswell (replace FOR_INDEX).
-#define PRINT_N_ARRAY(format, interFormat, arr, n) do	\
-	{													\
-		FOR_INDEX(ef__prarr_i, arr)						\
-		{												\
-			printf(format, arr[ef__prarr_i]);			\
-														\
-			if (ef__prarr_i < (size_t) (n - 1))			\
-			{											\
-				printf("%s", interFormat);				\
-			}											\
-			else										\
-			{											\
-				break;									\
-			}											\
-		}												\
-														\
+#define PRINT_N_ARRAY(format, interFormat, arr, n) do					\
+	{																	\
+		for (int ef__prarr_i = 0; ef__prarr_i < (n - 1); ++ef__prarr_i)	\
+		{																\
+			printf(format, arr[ef__prarr_i]);							\
+			printf("%s", interFormat);									\
+		}																\
+																		\
+		printf(format, arr[n - 1]);										\
+																		\
 	}while (0)
 
 #define PRINT_ARRAY(format, interformat, arr) PRINT_N_ARRAY(format, interformat, arr, ARRAY_SIZE(arr))
@@ -84,7 +77,7 @@ typedef int			b32;
 //       If rotationCount is 0, just copy src into dest (if they are not the same).
 // IMPORTANT: Do not forget to either use strlen or to count one less
 // when calling this on a nul-terminated string.
-void rotateRightArray(void *dest, void *src, size_t itemSize, size_t itemCount,
+static void rotateRightArray(void *dest, void *src, size_t itemSize, size_t itemCount,
 					  size_t rotationCount = 1)
 {
 	if (rotationCount >= itemCount)
@@ -123,7 +116,7 @@ void rotateRightArray(void *dest, void *src, size_t itemSize, size_t itemCount,
 //       If rotationCount is 0, just copy src into dest (if they are not the same).
 // IMPORTANT: Do not forget to either use strlen or to count one less
 // when calling this on a nul-terminated string.
-void rotateLeftArray(void *dest, void *src, size_t itemSize, size_t itemCount,
+static void rotateLeftArray(void *dest, void *src, size_t itemSize, size_t itemCount,
 					 size_t rotationCount = 1)
 {
 	if (rotationCount >= itemCount)

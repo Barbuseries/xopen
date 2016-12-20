@@ -1,6 +1,6 @@
 CC = g++
 DEFINES = -DEF_DEBUG=1
-CFLAGS = -W -Wall -Wno-pointer-arith -Wno-write-strings -g $(DEFINES)
+CFLAGS = -W -Wall -Wno-pointer-arith -Wno-write-strings -Wno-unused -g $(DEFINES)
 LDFLAGS = 
 
 BUILD_DIR=../build/
@@ -14,10 +14,10 @@ all: $(AOUT)
 $(AOUT): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
 
-$(BUILD_DIR)%.o: %.cpp %.h ef_utils.h
+$(BUILD_DIR)%.o: %.cpp %.h ef_utils.h xopen_common.h
 	$(CC) $(CFLAGS) -o $@ -c $<
 
-$(BUILD_DIR)%.o: %.cpp ef_utils.h
+$(BUILD_DIR)%.o: %.cpp ef_utils.h xopen_common.h
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:
