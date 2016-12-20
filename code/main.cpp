@@ -1,13 +1,13 @@
 #include "ef_utils.h"
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <pwd.h>
 #include <string.h>
 #include <getopt.h>
+#include <dirent.h>
 
-// TODO: - Add content of directories recursively.
-// 
-//       - Differentiate DIRECTORIES and files. (DIR, FILE)?
+// TODO: - Differentiate DIRECTORIES and files. (DIR, FILE)?
 //         What to do with directories then?
 //         Idea: Add a label system (%DIR% and %FILE% would be
 //         reserved, %IMG%, %VIDEO%, ... could be associted with
@@ -32,8 +32,9 @@
 
 enum OptionFlag
 {
-	OptionFlag_NONE		= 0,
-	OptionFlag_WHICH	= 1 << 0,
+	OptionFlag_NONE			= 0,
+	OptionFlag_WHICH		= 1 << 0,
+	OptionFlag_RECURSIVE	= 1 << 1,
 };
 
 struct Instruction
@@ -68,7 +69,12 @@ static char usage[] =
 	"Options:\n"
 	"      --help        Show this (hopefully) helpful message.\n"
 	"      --version     Show this program's version.\n"
-	"  -w, --which       Show which command would be executed on each given file."
+	"  -w, --which       Show which command would be executed on each given file.\n"
+	"  -e, --execute     Execute each command with it's associated files.\n"
+	"                    (Default)\n"
+	"  -r, --recursive   Add sub-directories recursively.\n"
+	"  -d, --directory   Add directories themselves not their content.\n"
+	"                    (Default)\n"
 };
 
 // NOTE: This part can be reused.
@@ -81,7 +87,7 @@ static char version[] =
 	"Copyright © 2016 Barbu\n"
 	"This work is free. You can redistribute it and/or modify it under the\n"
 	"terms of the Do What The Fuck You Want To Public License, Version 2,\n"
-	"as published by Sam Hocevar. See http://www.wtfpl.net/ for more details."
+	"as published by Sam Hocevar. See http://www.wtfpl.net/ for more details.\n"
 };
 
 
@@ -248,9 +254,6 @@ int main(int argc, char* argv[])
 
 	Instruction allInstructions[255] = {};
 	int instructionCount = 0;
-	
-	char **allFiles;
-	int fileCount = 0;
 
 	int helpFlag = 0,
 		versionFlag = 0;
@@ -262,6 +265,9 @@ int main(int argc, char* argv[])
 			{"help", no_argument, &helpFlag, 1},
 			{"version", no_argument, &versionFlag, 1},
 			{"which", no_argument, 0, 'w'},
+			{"execute", no_argument, 0, 'e'},
+			{"recursive", no_argument, 0, 'r'},
+			{"directory", no_argument, 0, 'd'},
 			{0, 0, 0, 0}
 		};
 			
@@ -270,7 +276,10 @@ int main(int argc, char* argv[])
 	for(;;)
 	{
 		int optionIndex = 0;
-		c = getopt_long(argc, argv, "w", longOptions, &optionIndex);
+		
+		// I'll add an 'i' soon.
+		// Promised.
+		c = getopt_long(argc, argv, "werd", longOptions, &optionIndex);
 
 		if (c == -1)
 		{
@@ -293,8 +302,24 @@ int main(int argc, char* argv[])
 				optionFlags |= OptionFlag_WHICH;
 				break;
 			}
+			case 'e':
+			{
+				optionFlags &= ~OptionFlag_WHICH;
+				break;
+			}
+			case 'r':
+			{
+				optionFlags |= OptionFlag_RECURSIVE;
+				break;
+			}
+			case 'd':
+			{
+				optionFlags &= ~OptionFlag_RECURSIVE;
+				break;
+			}
 			default:
 			{
+				return -1;
 				break;
 			}
 		}
@@ -302,19 +327,23 @@ int main(int argc, char* argv[])
 
 	if (helpFlag)
 	{
-		printf("%s\n", usage);
+		printf("%s", usage);
 		return 0;
 	}
 
 	if (versionFlag)
 	{
-		printf("%s\n", version);
+		printf("%s", version);
 		return 0;
-	}	
+	}
 
-	fileCount = argc - optind;
+	// TODO: Properly get the number of entries.
+	char allEntries[255][255];
+	int entryCount = 0;
 
-	if (fileCount <= 0)
+	entryCount = argc - optind;
+
+	if (entryCount <= 0)
 	{
 		char buffer[255];
 		sprintf(buffer, "%s: no file given.\n", ME);
@@ -322,13 +351,76 @@ int main(int argc, char* argv[])
 
 		return 1;
 	}
-	
-	allFiles = argv + optind;
 
-	for (int i = 0; i < fileCount; ++i)
+	for (int i = 0; i < entryCount; ++i)
 	{
-		char *file = allFiles[i];
-		char *extension = file;
+		strcpy(allEntries[i], argv[optind + i]);
+
+		int indexLastChar = strlen(allEntries[i]) - 1;
+
+		if (allEntries[i][indexLastChar] == '/')
+		{
+			allEntries[i][indexLastChar] = '\0';
+		}
+	}
+
+	if (optionFlags & OptionFlag_RECURSIVE)
+	{
+		int i = 0;
+		
+		while(i != entryCount)
+		{
+			char *entry = allEntries[i];
+			struct stat entryStat;
+			stat(entry, &entryStat);
+
+			if (S_ISDIR(entryStat.st_mode))
+			{
+				DIR *d;
+				struct dirent *dir;
+				char dirPath[255];
+				strcpy(dirPath, entry);
+
+				// Remove the directory from the list and move
+				// following entries one entry back.
+				memcpy(allEntries + i, allEntries + i + 1,
+					   (entryCount - i - 1) * sizeof(char) * ARRAY_SIZE(allEntries[0]));
+				--entryCount;
+				--i;
+
+				d = opendir(dirPath);
+
+				if (d)
+				{
+					while ((dir = readdir(d)) != NULL)
+					{
+						ASSERT(entryCount + 1 < (i32) ARRAY_SIZE(allEntries));
+
+						// Current and previous directory.
+						if ((strcmp(dir->d_name, ".") == 0) ||
+							(strcmp(dir->d_name, "..") == 0))
+						{
+							continue;
+						}
+
+						char buffer[255];
+						sprintf(buffer, "%s/%s", dirPath, dir->d_name);
+						
+						strcpy(allEntries[entryCount++], buffer);
+					}
+
+					closedir(d);
+				}
+			}
+
+			++i;
+		}
+	}
+
+	for (int i = 0; i < entryCount; ++i)
+	{
+		char *entry = allEntries[i];
+		char *extension = entry;
 			
 		while (*extension && (*extension++) != '.');
 
@@ -341,7 +433,7 @@ int main(int argc, char* argv[])
 		int commandLength = 0;
 
 		// Search extension in config file.
-		// If found, add file to associated command.
+		// If found, add entry to associated command.
 		if (*extension)
 		{
 			// NOTE: Extensions are separated by spaces or are at the
@@ -438,7 +530,7 @@ int main(int argc, char* argv[])
 		{
 			char buffer[255];
 			sprintf(buffer, "%s: %s: no command specified for extension '%s'.\n",
-					ME, file, extension);
+					ME, entry, extension);
 			fprintf(stderr, buffer);
 		}
 		else
@@ -451,7 +543,7 @@ int main(int argc, char* argv[])
 					(instruction->commandLength == commandLength) &&
 					(strncmp(instruction->command, command, commandLength) == 0))
 				{
-					instruction->arguments[instruction->argumentCount++] = file;
+					instruction->arguments[instruction->argumentCount++] = entry;
 					found = true;
 					break;
 				}
@@ -463,7 +555,7 @@ int main(int argc, char* argv[])
 						
 				instruction->commandLength = commandLength;
 				strncpy(instruction->command, command, commandLength);
-				instruction->arguments[instruction->argumentCount++] = file;
+				instruction->arguments[instruction->argumentCount++] = entry;
 			}
 		}
 	}
@@ -535,6 +627,9 @@ int main(int argc, char* argv[])
 			for (int index = 0; index < instruction.argumentCount; ++index)
 			{
 				char *argument = instruction.arguments[index];
+				
+				ASSERT(((current + strlen(argument) + 1) - bashCommand) < (i32) ARRAY_SIZE(bashCommand));
+				
 				current = strcpy(current, argument) + strlen(argument);
 				*current++ = ' ';
 			}
