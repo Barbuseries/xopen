@@ -33,6 +33,8 @@ If a line only contains `CMD`, it's the default instruction
 
 ### Note ###
 
-`EXPRESSION` is dot-less (i.e: `pdf` not `.pdf`).
+`EXTENSION` is dot-less (i.e: `pdf` not `.pdf`).
+
+The `EXTENSION` for directories is `/`.
 
 `CMD` must be recognised by `which` or be a function in your `~/.bashrc`.

@@ -7,16 +7,12 @@
 #include <getopt.h>
 #include <dirent.h>
 
-// TODO: - Differentiate DIRECTORIES and files. (DIR, FILE)?
-//         What to do with directories then?
-//         Idea: Add a label system (%DIR% and %FILE% would be
-//         reserved, %IMG%, %VIDEO%, ... could be associted with
+// TODO: - Add a label system %IMG%, %VIDEO%, ... associted with
 //         extensions by a user).
 //         
 //       - Allow more powerful syntax.
 //
 //       - Add options:
-//         --recursive: (See first point.)
 //         --as LABEL: (See label sytem) open ALL files given with the command associated to the LABEL.
 //         --only LABEL [LABEL ...]: Only open files associated to the LABEL(s).
 //       
@@ -42,8 +38,7 @@ struct Instruction
 	char command[255];
 	char *arguments[255];
 	
-	// NOTE: Let's be honest, more than this is ludicrous.
-	char extensions[128][10];
+	char extensions[128][64];
 	
 	int commandLength;
 	int argumentCount;
@@ -59,6 +54,7 @@ static char usage[] =
 	"Syntax of config file is:\n"
 	"CMD - EXTENSION [EXTENSION ...]\n\n"
 	"(EXTENSION is dot-less: 'pdf' not '.pdf')\n\n"
+	"The extension for directories is '/'.\n\n"
 	"If a line does not have any extension, it's the default command\n"
 	"(used when no other line matches).\n"
 	"In that case, '-' can be omitted.\n\n"
@@ -67,9 +63,10 @@ static char usage[] =
 	"Example:\n"
 	"evince - pdf\n"
 	"mpv - mp4 mkv\n"
+	"nautilus - /\n"
 	"emacs\n\n"
-	"This will execute 'evince' on '.pdf' files, mpv on '.mp4' and '.mkv'\n"
-	"and emacs on everything else.\n\n"
+	"This will execute 'evince' on '.pdf' files, mpv on '.mp4' and '.mkv',\n"
+	"nautilus on directories and emacs on everything else.\n\n"
 	"Options:\n"
 	"      --help        Show this (hopefully) helpful message.\n"
 	"      --version     Show this program's version.\n"
@@ -427,14 +424,49 @@ int main(int argc, char* argv[])
 	for (int i = 0; i < entryCount; ++i)
 	{
 		char *entry = allEntries[i];
-		char *extension = entry;
+		char *entryOffset = entry + strlen(entry) - 1;
 		
-		// TODO: Differentiate if it's a directory or a file (use '/'
-		//       as directory extension)
-		//       Use _last_ dot as start of extension? (what to do
-		//       with .tar.gz??)
-		// P.S: There is no directory if OptionFlag_RECURSIVE is set.
-		while (*extension && (*extension++) != '.');
+		char extension[64];
+
+		// No directory if --recursive is set.
+		if (!(optionFlags & OptionFlag_RECURSIVE))
+		{
+			struct stat entryStat;
+			stat(entry, &entryStat);
+
+			// Extension for directories is '/' (as it's both
+			// meaningful and impossible to have).
+			if (S_ISDIR(entryStat.st_mode))
+			{
+				extension[0] = '/'; extension[1] = '\0';
+				goto extension_check; 
+			}
+		}
+
+		// Put offset on last dot (or slash, as it can no longer be an extension).
+		while ((*entryOffset != '.') &&
+			   (*entryOffset != '/') && 
+			   (--entryOffset - entry) >= 0);
+
+		// No extension found.
+		if ((entryOffset - entry) < 0 ||
+			(*entryOffset == '/'))
+		{
+			extension[0] = '\0';
+		}
+		else
+		{
+			if (!(strlen(entryOffset + 1) < ARRAY_SIZE(extension)))
+			{
+				fprintf(stderr, "%s: %s\n", entry, entryOffset);
+			}
+			
+			ASSERT(strlen(entryOffset + 1) < ARRAY_SIZE(extension));
+			
+			strcpy(extension, entryOffset + 1);
+		}
+		
+	extension_check:
 
 		b32 found = false;
 
