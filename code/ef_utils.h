@@ -64,7 +64,10 @@ typedef int			b32;
 			printf("%s", interFormat);									\
 		}																\
 																		\
-		printf(format, arr[n - 1]);										\
+		if (n)															\
+		{																\
+			printf(format, arr[n - 1]);									\
+		}																\
 																		\
 	}while (0)
 

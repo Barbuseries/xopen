@@ -10,7 +10,6 @@
 #include <dirent.h>
 
 // TODO: - Add options:
-//         --only EXTENSION/TAG [EXTENSION/TAG ...]: Only open files associated with the EXTENSION(s)/TAG(s).
 //         --as EXTENSION/TAG: (See tag sytem) open ALL files given with the command associated with the EXTENSION/TAG.
 //         
 //       - Allow more powerful syntax.
@@ -41,7 +40,7 @@ static char usage[] =
 	" FILE [FILE ...] [OPTION ...]\n\n"
 	"Execute a predefined command based on given files' extension.\n\n"
 	"Syntax of config file is:\n"
-	"CMD - EXTENSION [EXTENSION ...]\n\n"
+	"CMD - EXTENSION [EXTENSION ...] [@TAG]\n\n"
 	"(EXTENSION is dot-less: 'pdf' not '.pdf')\n\n"
 	"The extension for directories is '/'.\n\n"
 	"If a line does not have any extension, it's the default command\n"
@@ -51,7 +50,7 @@ static char usage[] =
 	"~/.bashrc.\n\n"
 	"Example:\n"
 	"evince - pdf\n"
-	"mpv - mp4 mkv\n"
+	"mpv - mp4 mkv @VIDEO\n"
 	"nautilus - /\n"
 	"emacs\n\n"
 	"This will execute 'evince' on '.pdf' files, mpv on '.mp4' and '.mkv',\n"
@@ -67,6 +66,8 @@ static char usage[] =
 	"                    Add sub-directories recursively and add them as well.\n"
 	"  -d, --directory   Add directories themselves not their content.\n"
 	"                    (Default)\n"
+	"  -o, --only EXTENSION/TAG\n"
+	"                    Only execute commands associated with EXTENSION or TAG.\n"
 };
 
 // NOTE: This part can be reused.
@@ -247,6 +248,68 @@ static void getExtension(char *entry, char *extension)
 	getFileExtension(entry, extension);
 }
 
+static b32 instructionHasExtension(Instruction *instruction, char *extension, size_t extensionLength)
+{
+	for (int extensionIndex = 0; extensionIndex < instruction->extensionCount; ++extensionIndex)
+	{
+		if ((instruction->extensionsLength[extensionIndex] == extensionLength) &&
+			(strncmp(extension, instruction->extensions[extensionIndex], extensionLength) == 0))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static inline b32 instructionHasTag(Instruction *instruction, char *tag, size_t tagLength)
+{
+	if ((tagLength > 0) &&
+		(instruction->tagLength == tagLength) &&
+		(strncmp(tag, instruction->tag, tagLength) == 0))
+	{
+		return true;
+	}
+	
+	return false;
+}
+
+static Instruction *getInstructionByExtension(char *extension, size_t extensionLength,
+											  Instruction *allInstructions, int instructionCount)
+{
+	Instruction *instruction = allInstructions;
+	
+	for (int index = 0; index < instructionCount; ++index)
+	{
+		if (instructionHasExtension(instruction, extension, extensionLength))
+		{
+			return instruction;
+		}
+		
+		++instruction;
+	}
+
+	return NULL;
+}
+
+static Instruction *getInstructionByTag(char *tag, size_t tagLength,
+										Instruction *allInstructions, int instructionCount)
+{
+	Instruction *instruction = allInstructions;
+	
+	for (int index = 0; index < instructionCount; ++index)
+	{
+		if (instructionHasTag(instruction, tag, tagLength))
+		{
+			return instruction;
+		}
+		
+		++instruction;
+	}
+
+	return NULL;
+}
+
 int main(int argc, char* argv[])
 {
 	// NOTE: This part can be reused.
@@ -270,7 +333,7 @@ int main(int argc, char* argv[])
  
 		return -1;
 	}
-
+	
 	FILE *handle = fopen(configFile, "a+");
 
 	if (handle == NULL)
@@ -288,6 +351,7 @@ int main(int argc, char* argv[])
 		versionFlag = 0;
 	
 	char onlyArray[10][64];
+	size_t onlyArrayLength[10];
 	int onlyArrayCount = 0;
 	
 	i32 optionFlags = OptionFlag_None;
@@ -363,8 +427,9 @@ int main(int argc, char* argv[])
 			case 'o':
 			{
 				optionFlags |= OptionFlag_Only;
+				size_t length = strlen(optarg);
 				
-				if (strlen(optarg) >= ARRAY_SIZE(onlyArray[0]))
+				if (length >= ARRAY_SIZE(onlyArray[0]))
 				{
 					char buffer[255];
 
@@ -375,6 +440,7 @@ int main(int argc, char* argv[])
 					return -1;
 				}
 				
+				onlyArrayLength[onlyArrayCount] = length;
 				strcpy(onlyArray[onlyArrayCount++], optarg);
 				
 				break;
@@ -431,15 +497,16 @@ int main(int argc, char* argv[])
 	//       - Do same on recursive add, as soon as i == current index.
 	//
 	//       - Go to exectute (or make a function exectuteInstructions).
-	
-    // Copy entries given from argv.
+
+	// Copy entries given from argv.
 	for (int i = 0; i < entryCount; ++i)
 	{
 		strcpy(allEntries[i], argv[optind + i]);
 
 		int indexLastChar = strlen(allEntries[i]) - 1;
 
-		if (allEntries[i][indexLastChar] == '/')
+		if ((indexLastChar > 0)
+			&& allEntries[i][indexLastChar] == '/')
 		{
 			allEntries[i][indexLastChar] = '\0';
 		}
@@ -502,11 +569,10 @@ int main(int argc, char* argv[])
 			++i;
 		}
 	}
-
-	Instruction allInstructions[255];
+	
+	Instruction allInstructions[42];
 	int instructionCount = makeInstructionsFromConfig(configFile, allInstructions,
 													  (i32) ARRAY_SIZE(allInstructions));
-
 	Instruction *defaultInstruction = allInstructions;
 
 	// Default instruction is the only one without any associated
@@ -520,15 +586,17 @@ int main(int argc, char* argv[])
 
 		++defaultInstruction;
 	}
-	
+		
+	if ((defaultInstruction - allInstructions) >= instructionCount)
+	{
+		defaultInstruction = NULL;
+	}
+
+	// Find corresponding command (based on entry's extension).
 	for (int i = 0; i < entryCount; ++i)
 	{
-		// Extract extenstion.
 		char *entry = allEntries[i];
-		// char *entryOffset = entry + strlen(entry) - 1;
-		
 		char extension[64];
-
 		
 		// No directory if --recursive is set.
 		if (optionFlags & OptionFlag_Recursive)
@@ -539,57 +607,82 @@ int main(int argc, char* argv[])
 		{
 			getExtension(entry, extension);
 		}		
-
-	// Find corresponding command (based on entry's extension).
-	extension_check:
-
-		if ((defaultInstruction - allInstructions) >= instructionCount)
-		{
-			defaultInstruction = NULL;
-		}
-
-		b32 found = false;
+		
 		size_t extensionLength = strlen(extension);
 
-		// Search if a command is associated with this extension.
-		for (int index = 0; index < instructionCount; ++index)
+		b32 toSkip = false;
+		
+		if (onlyArrayCount)
 		{
-			Instruction *instruction = allInstructions + index;
+			toSkip = true;
 
-			for (int extensionIndex = 0; extensionIndex < instruction->extensionCount; ++extensionIndex)
+			// Extension explicitly asked.
+			for (int index = 0; index < onlyArrayCount; ++index)
 			{
-				if ((instruction->extensionsLength[extensionIndex] == extensionLength) &&
-					(strncmp(extension, instruction->extensions[extensionIndex], extensionLength) == 0))
+				if ((extensionLength == onlyArrayLength[index]) &&
+					(strncmp(extension, onlyArray[index], extensionLength) == 0))
 				{
-					ASSERT(instruction->argumentCount < (i32) ARRAY_SIZE(instruction->arguments));
-					
-					instruction->arguments[instruction->argumentCount++] = entry;
-					found = true;
-					break;
+					toSkip = false;
 				}
 			}
 		}
 
-		// Otherwhise, associate it with the default command (if there
-		// is any).
-		if (!found)
+		Instruction *instruction = getInstructionByExtension(extension, extensionLength,
+															 allInstructions, instructionCount);
+
+		if (instruction)
 		{
-			if (defaultInstruction)
+			if (toSkip)
 			{
-				ASSERT(defaultInstruction->argumentCount < (i32) ARRAY_SIZE(defaultInstruction->arguments));
+				for (int index = 0; index < onlyArrayCount; ++index)
+				{
+					if (instructionHasTag(instruction, onlyArray[index], onlyArrayLength[index]))
+					{
+						toSkip = false;
+					}
+				}
+			}
+
+			if (toSkip)
+			{
+				continue;
+			}
+			
+			ASSERT(instruction->argumentCount < (i32) ARRAY_SIZE(instruction->arguments));
+					
+			instruction->arguments[instruction->argumentCount++] = entry;
+		}
+		else if (defaultInstruction)
+		{
+			ASSERT(defaultInstruction->argumentCount < (i32) ARRAY_SIZE(defaultInstruction->arguments));
+
+			if (toSkip)
+			{
+				for (int index = 0; index < onlyArrayCount; ++index)
+				{
+					if (instructionHasTag(defaultInstruction, onlyArray[index], onlyArrayLength[index]))
+					{
+						toSkip = false;
+					}
+				}
+			}
+
+			if (toSkip)
+			{
+				continue;
+			}
 				
-				defaultInstruction->arguments[defaultInstruction->argumentCount++] = entry;
-				strcpy(defaultInstruction->extensions[defaultInstruction->extensionCount], extension);
-				defaultInstruction->extensionsLength[defaultInstruction->extensionCount++] = extensionLength;
-			}
-			else
-			{
-				// TODO?: Keep separate error message or group by extension?
-				char buffer[255];
-				sprintf(buffer, "%s: %s: no command specified for extension '%s'.\n",
-						ME, entry, extension);
-				fprintf(stderr, buffer);
-			}
+			defaultInstruction->arguments[defaultInstruction->argumentCount++] = entry;
+			strcpy(defaultInstruction->extensions[defaultInstruction->extensionCount], extension);
+			defaultInstruction->extensionsLength[defaultInstruction->extensionCount++] = extensionLength;
+		}
+		else if (!toSkip)
+		{
+			// TODO?: Keep separate error message or group by extension?
+			char buffer[255];
+			sprintf(buffer, "%s: %s: no command specified for extension '%s'.\n",
+					ME, entry, extension);
+			fprintf(stderr, buffer);
 		}
 	}
 

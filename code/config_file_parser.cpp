@@ -444,7 +444,7 @@ int makeInstructionsFromConfig(char *configFile, Instruction *allInstructions,
 		return 0;
 	}
 	
-	int instructionCount = (instruction - allInstructions) + instruction->commandLength;
+	int instructionCount = (instruction - allInstructions) + (instruction->commandLength != 0);
 
 	if (!instructionCount)
 	{

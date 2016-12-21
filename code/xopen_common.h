@@ -20,7 +20,7 @@ struct Instruction
 
 	// NOTE: Only one tag for now.
 	char *tag;
-	int tagLength;
+	size_t tagLength;
 };
 
 #endif
