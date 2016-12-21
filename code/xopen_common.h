@@ -1,6 +1,8 @@
 #ifndef XOPEN_COMMON_H
 #define XOPEN_COMMON_H
 
+#define ME "xopen"
+
 struct Instruction
 {
 	char command[255];
@@ -16,9 +18,9 @@ struct Instruction
 	int argumentCount;
 	int extensionCount;
 
-	// TODO: Add tagging system.
-	// char allTags[255];
-	// int tagCount;
+	// NOTE: Only one tag for now.
+	char *tag;
+	int tagLength;
 };
 
 #endif

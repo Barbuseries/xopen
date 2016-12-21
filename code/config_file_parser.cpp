@@ -11,7 +11,7 @@ enum TokenType
 	Token_Minus,
 	Token_OpenParenthesis,
 	Token_CloseParenthesis,
-	Token_At,
+	Token_Tag,
 	Token_Percent, // TODO: May be used as a substitution indicator.
 	Token_Newline,
 	
@@ -32,6 +32,7 @@ struct Token
 struct Tokenizer
 {
     char *at;
+	int line;
 };
 
 enum InstructionTokenType
@@ -40,7 +41,6 @@ enum InstructionTokenType
 	Instruction_Parameter,
 	Instruction_Path,
 	Instruction_Argument,
-	Instruction_Tag,
 };
 
 static char *readEntireFile(char *filename)
@@ -120,14 +120,13 @@ static Token getNextToken(Tokenizer *tokenizer)
 	
 		switch (*tokenizer->at)
 		{
-			case '\0': {token.type	= Token_EOF; return token;	break;}
+			case '\0': {token.type	= Token_EOF; return token;			break;}
 
-			case '-': {token.type	= Token_Minus;	break;}
-			case '(': {token.type	= Token_OpenParenthesis;	break;}
-			case ')': {token.type	= Token_CloseParenthesis;	break;}
-			case '@': {token.type	= Token_At;					break;}
-			case '%': {token.type	= Token_Percent;			break;}
-			case '\n': {token.type	= Token_Newline;			break;}
+			case '-': {token.type	= Token_Minus;						break;}
+			case '(': {token.type	= Token_OpenParenthesis;			break;}
+			case ')': {token.type	= Token_CloseParenthesis;			break;}
+			case '%': {token.type	= Token_Percent;					break;}
+			case '\n': {token.type	= Token_Newline; ++tokenizer->line;	break;}
 			case '#':
 			{
 				++(tokenizer->at);
@@ -142,6 +141,26 @@ static Token getNextToken(Tokenizer *tokenizer)
 				}
 
 				token.length = tokenizer->at - token.text;
+				++(tokenizer->line);
+				break;
+			}
+			case '@':
+			{
+				++(tokenizer->at);
+
+				token.type = Token_Tag;
+				token.text = tokenizer->at;
+					
+				while(tokenizer->at[0] &&
+					  !(isWhitespace(tokenizer->at[0]) ||
+						isEndOfLine(tokenizer->at[0])))
+				{
+					++(tokenizer->at);
+				}
+
+				token.length = tokenizer->at - token.text;
+				--(tokenizer->at);
+				
 				break;
 			}
 			
@@ -153,9 +172,7 @@ static Token getNextToken(Tokenizer *tokenizer)
 				{
 					token.type = Token_Literal;
 
-					while (isValidLiteralChar((++tokenizer->at)[0]))
-					{
-					}
+					while (isValidLiteralChar((++tokenizer->at)[0]));
 
 					token.length = tokenizer->at - token.text;
 					--(tokenizer->at);
@@ -223,6 +240,15 @@ static Token getToken(Tokenizer *tokenizer, char *text)
 	return token;
 }
 
+static b32 isValidInstruction(Instruction *instruction, Instruction *allInstructions, int allInstructionsSize)
+{
+	int instructionIndex = (instruction - allInstructions);
+	
+	return ((instructionIndex >= 0) &&
+			(instructionIndex < allInstructionsSize) &&
+			(instruction->commandLength > 0));
+}
+
 /*
   IMPORTANT
    
@@ -243,17 +269,19 @@ int makeInstructionsFromConfig(char *configFile, Instruction *allInstructions,
 	Tokenizer tokenizer = {};
 	tokenizer.at = content;
 
-	b32 parsing = true;
+	b32 parsing = true,
+		skipLine = false;
 	
 	// Shorter to write if we start before. 
-	Instruction *instruction = allInstructions - 1;
+	Instruction *instruction = allInstructions;
 	
 	Token token;
 	InstructionTokenType instructionTokenType = Instruction_Command;
 		
 	do
 	{
-		token = getNextToken(&tokenizer);
+		token = (skipLine) ? getToken(&tokenizer, Token_Newline) : getNextToken(&tokenizer);
+		skipLine = false;
 
 		switch (token.type)
 		{
@@ -267,23 +295,104 @@ int makeInstructionsFromConfig(char *configFile, Instruction *allInstructions,
 				//       Also check that instruction->command is not
 				//       empty, as this would be an error in the config
 				//       file. (This stands for other InstructionTypes as well)
-			case Token_Minus: {instructionTokenType = Instruction_Argument;				break;}
-			case Token_Newline: {instructionTokenType = Instruction_Command;			break;}
+			case Token_Minus:
+			{
+				if (!isValidInstruction(instruction, allInstructions, allInstructionsSize))
+				{
+					char buffer[255];
+
+					sprintf(buffer, "%s: %s, line %d: skipping line, no command given.\n",
+							ME, configFile, tokenizer.line);
+					fprintf(stderr, buffer);
+
+					skipLine = true;
+
+					break;
+				}
+				
+				instructionTokenType = Instruction_Argument;
+				break;
+			}
+			case Token_Newline:
+			{
+				instructionTokenType = Instruction_Command;
+
+				if (isValidInstruction(instruction, allInstructions, allInstructionsSize))
+				{
+					++instruction;
+					instruction->commandLength = 0;
+					instruction->tagLength = 0;
+				}
+				
+				break;
+			}
 				//	case Token_OpenParenthesis: {instructionTokenType = Instruction_Path;		break;}
 				//
 				//  NOTE: Should the path be given before or after the
 				//  command? (or allow both?)
 				//	case Token_CloseParenthesis: {instructionTokenType = Instruction_Command;	break;}
-				//	case Token_At: {instructionTokenType = Instruction_Tag ;					break;}
+			case Token_Tag:
+			{
+				if (!isValidInstruction(instruction, allInstructions, allInstructionsSize))
+				{
+					char buffer[255];
+
+					sprintf(buffer, "%s: %s, line %d: skipping line, no command given for tag %.*s.\n",
+							ME, configFile, tokenizer.line, (i32) token.length, token.text);
+					fprintf(stderr, buffer);
+
+					skipLine = true;
+
+					break;
+				}
+
+				if (token.length == 0)
+				{
+					char buffer[255];
+
+					sprintf(buffer, "%s: %s, line %d: ignoring, tag is empty for command %.*s.\n",
+							ME, configFile, tokenizer.line, instruction->commandLength, instruction->command);
+					fprintf(stderr, buffer);
+
+					break;
+				}
+
+				if (instruction->tagLength)
+				{
+					char buffer[255];
+
+					sprintf(buffer, "%s: %s, line %d: ignoring, additional tag %.*s for command %.*s.\n",
+							ME, configFile, tokenizer.line, (i32) token.length, token.text,
+							instruction->commandLength, instruction->command);
+					fprintf(stderr, buffer);
+
+					break;
+				}
+
+				instruction->tag = token.text;
+				instruction->tagLength = token.length;
+				
+				break;
+			}
 			case Token_Literal:
 			{
 				switch(instructionTokenType)
 				{
 					case Instruction_Command:
 					{
-						ASSERT((instruction - allInstructions) < allInstructionsSize);
-						++instruction;
-
+						if ((instruction - allInstructions) >= allInstructionsSize)
+						{
+							parsing = false;
+							
+							char buffer[255];
+							
+							sprintf(buffer, "%s: %s, line %d: skipping the rest, number of instructions exceeds %d.\n",
+									ME, configFile, tokenizer.line, allInstructionsSize);
+							fprintf(stderr, buffer);
+							
+							break;
+						}
+						
 						// TODO: See main.cpp. (Move which here).
 						//       Separate command from it's path (in
 						//       parenthesis) when given.
@@ -328,7 +437,14 @@ int makeInstructionsFromConfig(char *configFile, Instruction *allInstructions,
 		}
 	} while (token.type != Token_EOF && parsing);
 
-	int instructionCount = (instruction - allInstructions) + 1;
+	if ((instruction - allInstructions) < 0)
+	{
+		free(content);
+		
+		return 0;
+	}
+	
+	int instructionCount = (instruction - allInstructions) + instruction->commandLength;
 
 	if (!instructionCount)
 	{

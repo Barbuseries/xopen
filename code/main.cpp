@@ -9,19 +9,15 @@
 #include <getopt.h>
 #include <dirent.h>
 
-// TODO: - Add a label system @IMG, @VIDEO, ... associated with
-//         extensions by a user).
+// TODO: - Add options:
+//         --only EXTENSION/TAG [EXTENSION/TAG ...]: Only open files associated with the EXTENSION(s)/TAG(s).
+//         --as EXTENSION/TAG: (See tag sytem) open ALL files given with the command associated with the EXTENSION/TAG.
 //         
 //       - Allow more powerful syntax.
 //
-//       - Add options:
-//         --as LABEL: (See label sytem) open ALL files given with the command associated to the LABEL.
-//         --only LABEL [LABEL ...]: Only open files associated to the LABEL(s).
-//       
 //       - Make sure only one command is associated with a given
 //         extension.
 
-#define ME "xopen"
 
 #define MAJOR_VERSION 0
 #define MINOR_VERSION 4
@@ -30,9 +26,11 @@
 
 enum OptionFlag
 {
-	OptionFlag_NONE			= 0,
-	OptionFlag_WHICH		= 1 << 0,
-	OptionFlag_RECURSIVE	= 1 << 1,
+	OptionFlag_None							= 0,
+	OptionFlag_Which						= 1 << 0,
+	OptionFlag_Recursive					= 1 << 1,
+	OptionFlag_Recursive_Keep_Directories	= 1 << 2,
+	OptionFlag_Only							= 1 << 3,
 };
 
 
@@ -65,6 +63,8 @@ static char usage[] =
 	"  -e, --execute     Execute each command with it's associated files.\n"
 	"                    (Default)\n"
 	"  -r, --recursive   Add sub-directories recursively.\n"
+	"  -R, --recursive-keep-directories\n"
+	"                    Add sub-directories recursively and add them as well.\n"
 	"  -d, --directory   Add directories themselves not their content.\n"
 	"                    (Default)\n"
 };
@@ -207,6 +207,46 @@ static int childExec(char *commandPath, char *args[], int *statusCode = NULL,
 	return 0;
 }
 
+static void getFileExtension(char *file, char *extension)
+{
+	char *fileOffset = file + strlen(file) - 1;
+	
+	// Put offset on last dot (or slash, as it can no longer be an
+	// extension).
+	while ((*fileOffset != '.') &&
+		   (*fileOffset != '/') && 
+		   (--fileOffset - file) >= 0);
+
+	// No extension found.
+	if ((fileOffset - file) < 0 ||
+		(*fileOffset == '/'))
+	{
+		extension[0] = '\0';
+	}
+	else
+	{
+		ASSERT(strlen(fileOffset + 1) < 64);
+			
+		strcpy(extension, fileOffset + 1);
+	}
+}
+
+static void getExtension(char *entry, char *extension)
+{
+	struct stat entryStat;
+	stat(entry, &entryStat);
+
+	// Extension for directories is '/' (as it's both
+	// meaningful and impossible to have).
+	if (S_ISDIR(entryStat.st_mode))
+	{
+		extension[0] = '/'; extension[1] = '\0';
+		return;
+	}
+
+	getFileExtension(entry, extension);
+}
+
 int main(int argc, char* argv[])
 {
 	// NOTE: This part can be reused.
@@ -247,17 +287,24 @@ int main(int argc, char* argv[])
 	int helpFlag = 0,
 		versionFlag = 0;
 	
-	i32 optionFlags = OptionFlag_NONE;
+	char onlyArray[10][64];
+	int onlyArrayCount = 0;
+	
+	i32 optionFlags = OptionFlag_None;
 
+	// NOTE: I will probably have to parse the command line myself, as
+	//       getopt does not support multiple arguments for given option.
 	static struct option longOptions[] =
 		{
-			{"help", no_argument, &helpFlag, 1},
-			{"version", no_argument, &versionFlag, 1},
-			{"which", no_argument, 0, 'w'},
-			{"execute", no_argument, 0, 'e'},
-			{"recursive", no_argument, 0, 'r'},
-			{"directory", no_argument, 0, 'd'},
-			{0, 0, 0, 0}
+			{"help"							, no_argument, &helpFlag, 1},
+			{"version"						, no_argument, &versionFlag, 1},
+			{"which"						, no_argument, 0, 'w'},
+			{"execute"						, no_argument, 0, 'e'},
+			{"recursive"					, no_argument, 0, 'r'},
+			{"recursive-keep-directories"	, no_argument, 0, 'R'},
+			{"directory"					, no_argument, 0, 'd'},
+			{"only"							, required_argument, 0, 'o'},
+			{0								, 0, 0, 0}
 		};
 			
 	int c;
@@ -268,7 +315,7 @@ int main(int argc, char* argv[])
 		
 		// I'll add an 'i' soon.
 		// Promised.
-		c = getopt_long(argc, argv, "werd", longOptions, &optionIndex);
+		c = getopt_long(argc, argv, "werRdo:", longOptions, &optionIndex);
 
 		if (c == -1)
 		{
@@ -288,22 +335,48 @@ int main(int argc, char* argv[])
 			}
 			case 'w':
 			{
-				optionFlags |= OptionFlag_WHICH;
+				optionFlags |= OptionFlag_Which;
 				break;
 			}
 			case 'e':
 			{
-				optionFlags &= ~OptionFlag_WHICH;
+				optionFlags &= ~OptionFlag_Which;
 				break;
 			}
 			case 'r':
 			{
-				optionFlags |= OptionFlag_RECURSIVE;
+				optionFlags &= ~OptionFlag_Recursive_Keep_Directories;
+				optionFlags |= OptionFlag_Recursive;
+				break;
+			}
+			case 'R':
+			{
+				optionFlags &= ~OptionFlag_Recursive;
+				optionFlags |= OptionFlag_Recursive_Keep_Directories;
 				break;
 			}
 			case 'd':
 			{
-				optionFlags &= ~OptionFlag_RECURSIVE;
+				optionFlags &= ~OptionFlag_Recursive;
+				break;
+			}
+			case 'o':
+			{
+				optionFlags |= OptionFlag_Only;
+				
+				if (strlen(optarg) >= ARRAY_SIZE(onlyArray[0]))
+				{
+					char buffer[255];
+
+					sprintf(buffer, "%s: -o/--only: %s is too long (> %d characters).\n",
+							ME, optarg, (i32) ARRAY_SIZE(onlyArray[0]) - 1);
+					fprintf(stderr, buffer);
+
+					return -1;
+				}
+				
+				strcpy(onlyArray[onlyArrayCount++], optarg);
+				
 				break;
 			}
 			default:
@@ -341,7 +414,25 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	// Copy entries given from argv.
+	// TODO: If onlyArgs:
+	//       - Move instruction creation here.
+	//       - For each argv left:
+	//         If directory:
+	//           - If recursive, add content.
+	//           - If recursive and keep, add content BUT go to file part.
+	//         If file:
+	//           - Treat onlyArg element as extension:
+	//             - If file same extension, add file.
+	//             - If any file added, skip following step.
+	//           - Treat onlyArg element as tag:
+	//             - Get instruction by tag.
+	//             - If file extension in instruction extensions, add file.
+	//       - Save current index.
+	//       - Do same on recursive add, as soon as i == current index.
+	//
+	//       - Go to exectute (or make a function exectuteInstructions).
+	
+    // Copy entries given from argv.
 	for (int i = 0; i < entryCount; ++i)
 	{
 		strcpy(allEntries[i], argv[optind + i]);
@@ -355,7 +446,8 @@ int main(int argc, char* argv[])
 	}
 
 	// Add sub-directories recursively.
-	if (optionFlags & OptionFlag_RECURSIVE)
+	if ((optionFlags & OptionFlag_Recursive) ||
+		(optionFlags & OptionFlag_Recursive_Keep_Directories))
 	{
 		int i = 0;
 		
@@ -372,12 +464,15 @@ int main(int argc, char* argv[])
 				char dirPath[255];
 				strcpy(dirPath, entry);
 
-				// Remove the directory from the list and move
-				// following entries one entry back.
-				memcpy(allEntries + i, allEntries + i + 1,
-					   (entryCount - i - 1) * sizeof(char) * ARRAY_SIZE(allEntries[0]));
-				--entryCount;
-				--i;
+				if (!(optionFlags & OptionFlag_Recursive_Keep_Directories))
+				{
+					// Remove the directory from the list and move
+					// following entries one entry back.
+					memcpy(allEntries + i, allEntries + i + 1,
+						   (entryCount - i - 1) * sizeof(char) * ARRAY_SIZE(allEntries[0]));
+					--entryCount;
+					--i;
+				}
 
 				d = opendir(dirPath);
 
@@ -430,42 +525,20 @@ int main(int argc, char* argv[])
 	{
 		// Extract extenstion.
 		char *entry = allEntries[i];
-		char *entryOffset = entry + strlen(entry) - 1;
+		// char *entryOffset = entry + strlen(entry) - 1;
 		
 		char extension[64];
 
+		
 		// No directory if --recursive is set.
-		if (!(optionFlags & OptionFlag_RECURSIVE))
+		if (optionFlags & OptionFlag_Recursive)
 		{
-			struct stat entryStat;
-			stat(entry, &entryStat);
-
-			// Extension for directories is '/' (as it's both
-			// meaningful and impossible to have).
-			if (S_ISDIR(entryStat.st_mode))
-			{
-				extension[0] = '/'; extension[1] = '\0';
-				goto extension_check; 
-			}
-		}
-
-		// Put offset on last dot (or slash, as it can no longer be an extension).
-		while ((*entryOffset != '.') &&
-			   (*entryOffset != '/') && 
-			   (--entryOffset - entry) >= 0);
-
-		// No extension found.
-		if ((entryOffset - entry) < 0 ||
-			(*entryOffset == '/'))
-		{
-			extension[0] = '\0';
+			getFileExtension(entry, extension);
 		}
 		else
 		{
-			ASSERT(strlen(entryOffset + 1) < ARRAY_SIZE(extension));
-			
-			strcpy(extension, entryOffset + 1);
-		}
+			getExtension(entry, extension);
+		}		
 
 	// Find corresponding command (based on entry's extension).
 	extension_check:
@@ -552,7 +625,7 @@ int main(int argc, char* argv[])
 		//       shell function defined in ~/.bashrc.
 		char *path = (statusCode == 0) ? instruction.commandPath : (char *) "~/.bashrc";
 		
-		if (optionFlags & OptionFlag_WHICH)
+		if (optionFlags & OptionFlag_Which)
 		{
 			printf("%s (%s)", instruction.command, path);
 			PRINT_N_ARRAY("\n\t%s", "", instruction.arguments, instruction.argumentCount);
